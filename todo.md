@@ -54,36 +54,39 @@
     *   **逻辑：** 生成伪随机数 -> 对比风险值 -> 执行（转移 NFT 或 炸毁）。
     *   **防死锁：** 处理 256 个区块后哈希无法获取的情况（判定为自动爆炸）。
 
-### 阶段三：经济模型与激励 (Tokenomics) - 详细版
-**目标：** 构建一个包含稳定收益和博弈大奖的双重激励系统。
+### 阶段三 (重构): 新的奖池分配策略
+**目标:** 将 "赢家通吃" 的奖池模型重构为按持有时间比例分配给所有前持有者的模型，并确保其安全性和可扩展性。
 
-*   [ ] **3.1 创建 ERC20 奖励代币 (`PotatoYield.sol`)**
-    *   编写一个标准的 ERC20 合约，作为持有山芋的奖励。
-    *   它需要包含一个 `mint(address to, uint256 amount)` 函数。
-    *   这个 `mint` 函数必须设置为只有主 `Potato.sol` 合约才能调用（使用 `Ownable` 模式，将 `owner` 设置为主合约地址）。
+*   [ ] **3.R.1: 升级数据结构**
+    *   移除 `GameInfo` 中的 `lastSuccessfulTosser` 字段。
+    *   新增 `mapping(address => uint256) public accumulatedHoldTime;`，用于记录每个地址的总持有时间。
+    *   新增 `uint256 public totalHoldTimeInRound;`，记录本轮游戏累积的总持有时间。
+    *   新增 `mapping(address => bool) public hasClaimedJackpot;`，防止重复领取奖金。
+    *   新增 `uint256 public finalJackpot;` 和 `bool public isClaimingOpen;`，用于标记游戏结束和奖金池状态。
 
-*   [ ] **3.2 升级核心数据结构**
-    *   为了实现“幸存者”奖励，我们需要知道是谁把山芋传给了当前爆炸的玩家。
-    *   修改 `GameInfo` 结构体，增加一个 `address public lastSuccessfulTosser` 字段，用于记录上一位成功传出山芋的玩家。
+*   [ ] **3.R.2: 修改 `resolveToss` (安全着陆)**
+    *   当山芋安全着陆时，计算 `holdTime`。
+    *   将 `holdTime` 添加到 `accumulatedHoldTime[from]` 和 `totalHoldTimeInRound` 中。
 
-*   [ ] **3.3 实现持有收益 (Yield) 逻辑**
-    *   在 `Potato.sol` 中增加一个可配置的 `yieldRate` 变量（例如，每秒产生的 `PotatoYield` 代币数量）。
-    *   编写一个公开的 `calculatePendingYield()` 视图函数，用于实时查询当前持有者累积的待领取收益。
-    *   在 `resolveToss` 的“安全着陆”逻辑分支中，为**上一位持有者**（`from` 地址）调用 `PotatoYield` 合约的 `mint` 函数，发放奖励。
+*   [ ] **3.R.3: 修改 `resolveToss` (爆炸)**
+    *   当山芋爆炸时：
+        *   不再立即支付奖金。
+        *   记录 `finalJackpot = address(this).balance`。
+        *   设置 `isClaimingOpen = true`。
+        *   重置游戏状态，为可能的下一轮游戏做准备（或永久结束）。
 
-*   [ ] **3.4 实现爆炸奖池 (Jackpot) 逻辑**
-    *   将 `tossPotato` 函数修改为 `payable`。
-    *   增加一个可配置的 `entryFee` 变量（每次传递所需支付的 ETH 费用）。
-    *   在 `tossPotato` 中，要求 `msg.value` 必须等于 `entryFee`，并将收到的 ETH 存入合约中作为奖池。
-    *   在 `resolveToss` 的“爆炸”逻辑分支中：
-        *   确定奖池的赢家为 `gameInfo.lastSuccessfulTosser`。
-        *   将合约中的全部 ETH 余额（`address(this).balance`）转给这位赢家。
+*   [ ] **3.R.4: 实现 `claimJackpotShare()` (核心)**
+    *   编写一个新的外部函数 `claimJackpotShare()`。
+    *   函数逻辑：
+        *   `require(isClaimingOpen, "Claiming is not open.");`
+        *   `require(!hasClaimedJackpot[msg.sender], "Already claimed.");`
+        *   计算份额： `uint256 share = (finalJackpot * accumulatedHoldTime[msg.sender]) / totalHoldTimeInRound;`
+        *   **先更新状态，再转账（防重入攻击）**: 设置 `hasClaimedJackpot[msg.sender] = true;`
+        *   向 `msg.sender` 发送 `share` 数量的 ETH。
 
-*   [ ] **3.5 编写对应的测试用例**
-    *   测试 `calculatePendingYield` 计算是否准确。
-    *   测试安全着陆后，上一位持有者是否收到了正确数量的 `PotatoYield` 代币。
-    *   测试 `tossPotato` 时支付了错误的 `entryFee` 会被 revert。
-    *   测试山芋爆炸后，“幸存者”是否收到了正确的奖池 ETH。
+*   [ ] **3.R.5: 更新所有测试用例**
+    *   重写 `test_jackpotPayout_onExplosion` 来测试新的 `claimJackpotShare` 逻辑。
+    *   确保所有与 `resolveToss` 相关的测试都更新以反映新的状态变化。
 
 ### 阶段四：测试与攻防 (Testing & Security)
 **目标：** 模拟各种极端情况，确保博弈公平。
@@ -96,11 +99,13 @@
     *   测试在同一个区块内连续调用（应该被 ReentrancyGuard 或 状态机拦截）。
     *   测试超过 256 个区块没人开奖的情况。
 
-### 阶段五：极客交互脚本 (Scripts - The "No Frontend" UI)
-**目标：** 你是工程师，你不需要网页，你需要 CLI 工具。
+### 阶段五：极客交互脚本 (更新版)
+**目标：** 提供命令行工具来与重构后的合约交互。
 
-*   [ ] **5.1 编写 `play.ts` 脚本**
-    *   功能：查询当前谁拿着山芋？现在的爆炸概率是多少？
-    *   功能：一键调用 `tossPotato`。
-*   [ ] **5.2 编写 `keeper-bot.ts` 脚本**
-    *   功能：轮询链上状态，发现有 `InFlight` 状态且区块已确认时，自动调用 `resolveToss` 赚取执行费。
+*   [ ] **5.1 `status.js` (状态查询脚本)**
+    *   查询当前山芋持有人、持有时间、即时爆炸概率。
+    *   查询奖池总金额 (`finalJackpot`) 和个人可领取份额。
+*   [ ] **5.2 `play.js` (游戏操作脚本)**
+    *   一键调用 `tossPotato` 并支付 `entryFee`。
+    *   一键调用 `resolveToss`。
+    *   一键调用 `claimJackpotShare` 来领取自己的奖金。

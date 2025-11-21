@@ -1,66 +1,62 @@
-## Foundry
+# 薛定谔的山芋 (Schrödinger's Potato) 🥔
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+这是一个基于区块链的高风险、高回报的概率博弈游戏。核心玩法围绕着一个独特的 NFT——“山芋”的传递展开。玩家的目标是在山芋爆炸前尽可能久地持有它以赚取收益，或者成为那个引爆别人手中山芋的“幸运儿”，从而赢得终极大奖。
 
-Foundry consists of:
+---
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+## 核心概念
 
-## Documentation
+-   **山芋 (The Potato)**: 这是一个独一无二的 ERC721 NFT (Token ID 为 1)。拥有这个 NFT，意味着你就是当前的山芋持有者。
 
-https://book.getfoundry.sh/
+-   **收益代币 (`$PYT`)**: 这是一种 ERC20 代币。你持有山芋的每一秒，都在为你累积 `$PYT` 代币。
 
-## Usage
+-   **大奖池 (The Jackpot)**: 这是一个 ETH 奖池。每次传递山芋都需要支付一笔固定的 ETH“入场费”，这笔费用会全部进入奖池。
 
-### Build
+-   **风险 (The Risk)**: 你持有山芋的时间越长，当你尝试传递它时，它“爆炸”的概率就越高。
 
-```shell
-$ forge build
-```
+---
 
-### Test
+## 🎮 游戏玩法 (Game Loop)
 
-```shell
-$ forge test
-```
+游戏围绕着“持有”和“投掷”两个核心动作展开。
 
-### Format
+### 1. 成为持有者
+当别人向你投掷山芋，并且山芋安全着陆时，你就成为了新的持有者。
 
-```shell
-$ forge fmt
-```
+### 2. 持有山芋
+当你持有山芋时：
+-   你的 `$PYT` 收益代币正在**每秒钟**不断累积。你可以随时调用 `calculatePendingYield()` 函数来查看当前累积的待领取收益。
+-   与此同时，山芋的爆炸风险也在随时间增长。
 
-### Gas Snapshots
+### 3. 投掷山芋
+-   要传递山芋，你需要调用 `tossPotato(address _to)` 函数，并指定接收者。
+-   调用此函数时，你必须支付一笔固定的 ETH **入场费 (entryFee)**。这笔费用会进入大奖池。
+-   **注意：** 这个操作是**异步**的。它不会立即转移山芋，而是将山芋置于“飞行中 (`InFlight`)”状态，等待结算。
 
-```shell
-$ forge snapshot
-```
+### 4. 结算投掷
+在一次投掷发生后，**任何人**都可以调用 `resolveToss()` 函数来“开奖”，揭晓山芋的命运。
+-   合约会使用一个未来的区块哈希来生成一个伪随机数。
+-   这个随机数将与你持有山芋时长所对应的风险值进行比较，产生两种结果：
 
-### Anvil
+#### **结果 ①：安全着陆！ ✅**
+-   **条件：** 随机数**大于**你的风险阈值。
+-   **结果：**
+    1.  山芋 NFT 安全转移给新的持有者。
+    2.  你（作为投掷者）将获得你持有期间累积的所有 `$PYT` 收益代币。
+    3.  你成为了**“最后的成功投掷者”(`lastSuccessfulTosser`)**，获得了下一次大奖的**领奖资格**。
 
-```shell
-$ anvil
-```
+#### **结果 ②：山芋爆炸！ 💥**
+-   **条件：** 随机数**小于**你的风险阈zhí值（或者超过 256 个区块仍未结算）。
+-   **结果：**
+    1.  山芋 NFT 被**销毁**，游戏结束。
+    2.  你（作为当前持有者）**无法获得**任何累积的 `$PYT` 收益，所有待领取的收益都将归零。
+    3.  **“最后的成功投掷者”**（也就是把山芋传给你的那个人）将**赢得奖池中累积的全部 ETH**！
 
-### Deploy
+---
 
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
+## 📈 策略与博弈
 
-### Cast
+-   **快速传递**: 降低自己手中爆炸的风险，并争取成为“最后的成功投掷者”以赢得大奖。但这样会牺牲 `$PYT` 的收益。
+-   **长期持有**: 累积大量的 `$PYT` 收益，但需要承担极高的爆炸风险，并可能让你的“上家”赢得大奖。
 
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+这是一个在稳定收益和巨额大奖之间进行权衡的经典博弈。祝你好运！

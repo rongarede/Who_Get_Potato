@@ -54,16 +54,36 @@
     *   **逻辑：** 生成伪随机数 -> 对比风险值 -> 执行（转移 NFT 或 炸毁）。
     *   **防死锁：** 处理 256 个区块后哈希无法获取的情况（判定为自动爆炸）。
 
-### 阶段三：经济模型与激励 (Tokenomics)
-**目标：** 编写让人“贪婪”的 Yield 逻辑。
+### 阶段三：经济模型与激励 (Tokenomics) - 详细版
+**目标：** 构建一个包含稳定收益和博弈大奖的双重激励系统。
 
-*   [ ] **3.1 编写收益累积逻辑**
-    *   计算公式：`(now - lastTransferTime) * rate`。
-    *   注意：只有在 `resolveToss` 成功（存活）时，收益才 Mint 给玩家。
-    *   如果爆炸，待领取的收益归零（或流入奖池）。
-*   [ ] **3.2 编写奖池管理**
-    *   入场费 (Entry Fee) 逻辑。
-    *   爆炸后押金的分配逻辑（给上一任玩家？给开发者？销毁？）。
+*   [ ] **3.1 创建 ERC20 奖励代币 (`PotatoYield.sol`)**
+    *   编写一个标准的 ERC20 合约，作为持有山芋的奖励。
+    *   它需要包含一个 `mint(address to, uint256 amount)` 函数。
+    *   这个 `mint` 函数必须设置为只有主 `Potato.sol` 合约才能调用（使用 `Ownable` 模式，将 `owner` 设置为主合约地址）。
+
+*   [ ] **3.2 升级核心数据结构**
+    *   为了实现“幸存者”奖励，我们需要知道是谁把山芋传给了当前爆炸的玩家。
+    *   修改 `GameInfo` 结构体，增加一个 `address public lastSuccessfulTosser` 字段，用于记录上一位成功传出山芋的玩家。
+
+*   [ ] **3.3 实现持有收益 (Yield) 逻辑**
+    *   在 `Potato.sol` 中增加一个可配置的 `yieldRate` 变量（例如，每秒产生的 `PotatoYield` 代币数量）。
+    *   编写一个公开的 `calculatePendingYield()` 视图函数，用于实时查询当前持有者累积的待领取收益。
+    *   在 `resolveToss` 的“安全着陆”逻辑分支中，为**上一位持有者**（`from` 地址）调用 `PotatoYield` 合约的 `mint` 函数，发放奖励。
+
+*   [ ] **3.4 实现爆炸奖池 (Jackpot) 逻辑**
+    *   将 `tossPotato` 函数修改为 `payable`。
+    *   增加一个可配置的 `entryFee` 变量（每次传递所需支付的 ETH 费用）。
+    *   在 `tossPotato` 中，要求 `msg.value` 必须等于 `entryFee`，并将收到的 ETH 存入合约中作为奖池。
+    *   在 `resolveToss` 的“爆炸”逻辑分支中：
+        *   确定奖池的赢家为 `gameInfo.lastSuccessfulTosser`。
+        *   将合约中的全部 ETH 余额（`address(this).balance`）转给这位赢家。
+
+*   [ ] **3.5 编写对应的测试用例**
+    *   测试 `calculatePendingYield` 计算是否准确。
+    *   测试安全着陆后，上一位持有者是否收到了正确数量的 `PotatoYield` 代币。
+    *   测试 `tossPotato` 时支付了错误的 `entryFee` 会被 revert。
+    *   测试山芋爆炸后，“幸存者”是否收到了正确的奖池 ETH。
 
 ### 阶段四：测试与攻防 (Testing & Security)
 **目标：** 模拟各种极端情况，确保博弈公平。

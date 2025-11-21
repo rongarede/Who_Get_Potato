@@ -5,6 +5,7 @@ import "forge-std/console.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "./PotatoYield.sol"; // Import the PotatoYield ERC20 contract
 
 /**
  * @title Schrodinger's Potato
@@ -22,6 +23,7 @@ contract Potato is ERC721, Ownable, ReentrancyGuard {
 
     struct GameInfo {
         address holder;
+        address lastSuccessfulTosser; // New field for jackpot payout
         uint256 lastTransferTime;
         uint256 tossBlockNumber;
         address pendingReceiver;
@@ -32,6 +34,13 @@ contract Potato is ERC721, Ownable, ReentrancyGuard {
     uint256 public constant POTATO_ID = 1;
     GameState public currentState;
     GameInfo public gameInfo;
+
+    // Yield logic
+    PotatoYield public potatoYieldContract;
+    uint256 public yieldRate; // Yield tokens per second (scaled by PYT decimals)
+
+    // Jackpot logic
+    uint256 public entryFee; // ETH required to toss the potato
 
     // Risk profile: holdTimeTiers[i] seconds -> riskPercentageTiers[i]% chance of explosion
     uint256[] public holdTimeTiers;
@@ -55,19 +64,28 @@ contract Potato is ERC721, Ownable, ReentrancyGuard {
         uint256[] holdTimeTiers,
         uint256[] riskPercentageTiers
     );
+    event EntryFeeUpdated(uint256 newEntryFee);
+    event JackpotClaimed(address indexed winner, uint256 amount);
+
 
     // --- Constructor ---
 
-    constructor() ERC721("Schrodinger's Potato", "POTATO") Ownable(msg.sender) {
+    constructor(address _potatoYieldAddress) ERC721("Schrodinger's Potato", "POTATO") Ownable(msg.sender) {
         _mint(msg.sender, POTATO_ID);
 
         gameInfo = GameInfo({
             holder: msg.sender,
+            lastSuccessfulTosser: address(0), // Initially no one has tossed successfully
             lastTransferTime: block.timestamp,
             tossBlockNumber: 0,
             pendingReceiver: address(0)
         });
         currentState = GameState.Idle;
+
+        // Initialize yield token contract and rate
+        potatoYieldContract = PotatoYield(_potatoYieldAddress);
+        yieldRate = 1 ether; // Default: 1 PYT per second (assuming 18 decimals)
+        entryFee = 0.01 ether; // Default entry fee: 0.01 ETH
 
         // Default risk profile:
         // - 1-6 hours: 5%
@@ -92,7 +110,7 @@ contract Potato is ERC721, Ownable, ReentrancyGuard {
      * @notice Tosses the potato to a new player, initiating the resolution phase.
      * @param _to The address of the player to receive the potato.
      */
-    function tossPotato(address _to) external nonReentrant {
+    function tossPotato(address _to) external payable nonReentrant {
         require(currentState == GameState.Idle, "Potato: Not in Idle state.");
         require(
             ownerOf(POTATO_ID) == msg.sender,
@@ -100,6 +118,7 @@ contract Potato is ERC721, Ownable, ReentrancyGuard {
         );
         require(_to != address(0), "Potato: Cannot toss to zero address.");
         require(_to != msg.sender, "Potato: Cannot toss to self.");
+        require(msg.value == entryFee, "Potato: Incorrect entry fee.");
 
         currentState = GameState.InFlight;
         gameInfo.tossBlockNumber = block.number;
@@ -139,9 +158,18 @@ contract Potato is ERC721, Ownable, ReentrancyGuard {
             address oldHolder = gameInfo.holder;
             _burn(POTATO_ID);
             
+            if (gameInfo.lastSuccessfulTosser != address(0)) {
+                uint256 jackpotAmount = address(this).balance;
+                // Using call.value instead of transfer to avoid fixed gas stipend and make it more robust.
+                (bool success, ) = payable(gameInfo.lastSuccessfulTosser).call{value: jackpotAmount}("");
+                require(success, "Potato: Failed to send jackpot.");
+                emit JackpotClaimed(gameInfo.lastSuccessfulTosser, jackpotAmount);
+            }
+                
             // Reset game state
             gameInfo.holder = address(0); // Game over
-            currentState = GameState.Idle; // Or a new state e.g., GameOver
+            gameInfo.lastSuccessfulTosser = address(0); // Reset for new game
+            currentState = GameState.Idle; 
 
             emit PotatoExploded(oldHolder, holdTime);
         } else {
@@ -149,7 +177,15 @@ contract Potato is ERC721, Ownable, ReentrancyGuard {
             address from = gameInfo.holder;
             address to = gameInfo.pendingReceiver;
 
+            // Mint yield to the previous holder
+            uint256 yieldAmount = (block.timestamp - gameInfo.lastTransferTime) * yieldRate;
+            if (yieldAmount > 0) {
+                potatoYieldContract.mint(from, yieldAmount);
+                emit YieldClaimed(from, yieldAmount);
+            }
+
             gameInfo.holder = to;
+            gameInfo.lastSuccessfulTosser = from; // 'from' is the last successful tosser
             gameInfo.lastTransferTime = block.timestamp;
             gameInfo.pendingReceiver = address(0);
             currentState = GameState.Idle;
@@ -159,6 +195,18 @@ contract Potato is ERC721, Ownable, ReentrancyGuard {
             emit PotatoLanded(from, to, holdTime);
         }
     }
+
+    /**
+     * @notice Calculates the pending PotatoYield tokens for the current holder.
+     * @return The amount of PotatoYield tokens accumulated.
+     */
+    function calculatePendingYield() public view returns (uint256) {
+        if (gameInfo.holder == address(0) || currentState != GameState.Idle) {
+            return 0;
+        }
+        return (block.timestamp - gameInfo.lastTransferTime) * yieldRate;
+    }
+
 
     // --- Helper Functions ---
 
@@ -211,5 +259,22 @@ contract Potato is ERC721, Ownable, ReentrancyGuard {
         riskPercentageTiers = _riskPercentageTiers;
 
         emit RiskProfileUpdated(_holdTimeTiers, _riskPercentageTiers);
+    }
+    
+    /**
+     * @notice Allows the owner to set the yield rate.
+     * @param _yieldRate The new yield rate (PYT tokens per second, scaled by PYT decimals).
+     */
+    function setYieldRate(uint256 _yieldRate) external onlyOwner {
+        yieldRate = _yieldRate;
+    }
+
+    /**
+     * @notice Allows the owner to set the entry fee for tossing the potato.
+     * @param _entryFee The new entry fee in Wei.
+     */
+    function setEntryFee(uint256 _entryFee) external onlyOwner {
+        entryFee = _entryFee;
+        emit EntryFeeUpdated(_entryFee);
     }
 }

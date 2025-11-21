@@ -226,6 +226,14 @@ contract Potato is ERC721, Ownable, ReentrancyGuard {
         return 0;
     }
 
+    function getHoldTimeTiers() public view returns (uint256[] memory) {
+        return holdTimeTiers;
+    }
+
+    function getRiskPercentageTiers() public view returns (uint256[] memory) {
+        return riskPercentageTiers;
+    }
+
     // --- Admin Functions ---
 
     /**
